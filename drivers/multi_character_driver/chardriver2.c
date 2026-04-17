@@ -89,9 +89,20 @@ static ssize_t custom_reader(struct file *file , char __user *buffer , size_t si
 //--------------------------------------------------------------------------------------------------//
 static int custom_opener(struct inode *inode , struct file *file){
 	int minor , major ;
+	char *buf;
+	char *path_string;
 
 	minor = MINOR(inode->i_rdev);
 	major = MAJOR(inode->i_rdev);
+
+	buf =  kmalloc(PATH_MAX,GFP_KERNEL);
+
+	path_string =  d_path(&file->f_path,buf,PATH_MAX);
+	if(IS_ERR(path_string)){
+		pr_err("ERROR IN GETTING THE PATH OF THE FILE \n");
+	}else{
+		pr_info("file path : %s ", path_string);
+	};
 
 	pr_info("MAJOR : %d | MINOR : %d " , major, minor);
 

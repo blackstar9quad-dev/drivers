@@ -1,209 +1,212 @@
+#include <linux/kernel.h>
+#include <linux/types.h>
 #include <linux/fs.h>
-#include <linux/kdev_t.h>
-#include <linux/cdev.h>
-#include <linux/uaccess.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/device.h>
-#include <linux/module.h>
-#include <linux/kernel.h>
 #include <linux/err.h>
-#include <linux/types.h>
+#include <linux/uaccess.h>
+#include <linux/cdev.h>
+#include <linux/kdev_t.h>
 
-#define MAX_MINOR 4
+#define MAX_MINOR 1
 
-struct my_data{
-	struct cdev cdev_pointer;
-	struct file_operations *file_op;
-	struct device *module_devices[MAX_MINOR];
-	dev_t devt;
-	struct class *driver_class;
-	char *data;
-	size_t total_data_size;
-};
-static struct my_data global_variable;
+struct cdev *cdev_variable;
+dev_t devvt;
+char *ker_buff;
+struct class *driver_class;
+struct device *module_device ;
+size_t total_data_size ; 
 
-static ssize_t custom_writer(struct file *file , const  char __user *buffer , size_t size , loff_t *off){
+static ssize_t custom_reader(struct file *file , char  __user *buffer , size_t size , loff_t *offset){
 
-	struct my_data *data_struct_pt = file->private_data ; 
-
-	int minor , major;
-	minor = MINOR(data_struct_pt->devt);
-	major = MAJOR(data_struct_pt->devt);
-	size_t data_size ; 
-	data_size = data_struct_pt->total_data_size + size ; 
-	data_struct_pt->data = krealloc(data_struct_pt->data ,data_size, GFP_KERNEL);
-
-	if(!data_struct_pt->data){
-		return -ENOMEM;
-	};
-
-	copy_from_user(data_struct_pt->data + size,buffer,size);
-
-	pr_info("MESSAGE WRITTEN TO DEVICE STRUCT for MAJOR : %d | MINOR : %d \n",major,minor);
-
-	return size;
-};
-
-static ssize_t custom_reader(struct file *file , const char __user *buffer , size_t size , loff_t *offset){
-
-
-	struct my_data *data_struct_pt = file->private_data;
-
-	int minor , major ;
-	minor = MINOR(data_struct_pt->devt);
-	major = MAJOR(data_struct_pt->devt);
-
-	if(!data_struct_pt->data || data_struct_pt->total_data_size == 0){
-		pr_info("NO DATA TO READ (data:%ld)\n",data_struct_pt->total_data_size);
+	if(*offset >= total_data_size){
+		pr_info("EOF REACHED \n");
 		return 0;
 	};
 
-	if(*offset >= data_struct_pt->total_data_size){
+	if(total_data_size == 0 || !ker_buff){
+		pr_err("NOTHING TO READ \n");
 		return 0;
 	};
 
-	size_t remaining = data_struct_pt->total_data_size - *offset ;
-	size_t bytes_to_read = (size < remaining) ? size : remaining ;
+	size_t data_left =  total_data_size - *offset ;
+	size_t bytes_to_read = (size < data_left) ? size : data_left ;
 
-	if(copy_to_user(buffer , data_struct_pt->data + *offset , bytes_to_read)){
+	if(copy_to_user(buffer,ker_buff,bytes_to_read)){
+		pr_err("COPYING ERROR \n");
 		return -EFAULT;
 	};
 
-	*offset += bytes_to_read ;
+	*offset += bytes_to_read;
 
 	return bytes_to_read ;
 
 };
 
+static ssize_t custom_writer(struct file *file , const char __user *buffer , size_t size , loff_t *offset){
+	total_data_size += size ;
+        ker_buff = krealloc(ker_buff , total_data_size ,GFP_KERNEL);
+
+	if(!ker_buff){
+		return -ENOMEM;
+	};
+
+	if(copy_from_user(ker_buff,buffer,size)){
+	        return -EFAULT;
+	 };
+
+	 pr_info("DATA HAS NOW BEEN SAVED IN THE KERNEL BUFFER \n");
+
+	 return size ;
+};
+
 static int custom_opener(struct inode *inode , struct file *file){
-	pr_info("NOW IN THE CUSTOM OPENER \n");
+	pr_info("NOW IN THE CUSTOM OPEN \n");
+	char *buff;
 
-	struct my_data *data = container_of(inode->i_cdev, struct my_data , cdev_pointer); //get's the pointer the start of the global_variable hence the struct driver_data 
+	buff =  kmalloc(PATH_MAX , GFP_KERNEL);
+	if(!buff){
+		return -ENOMEM;
+	};
 
-	struct my_data file->private_data = data;
+	char *path_string;
+	path_string = d_path(&file->f_path,buff,PATH_MAX);
+	if(IS_ERR(path_string)){
+			pr_err("error in printing the path \n");
+	}else {
+		pr_info("file path : %s ", path_string);
+	};
 
-	int minor , major ; 
-	minor =  MINOR(file->private_data->devt);
-	major =  MAJOR(file->private_data->devt);
-
-	pr_info("DEVICE DEV_T : %d",file->private_data->devt);
-	pr_info("MINOR : %d | MAJOR : %d \n",minor,major);
+	int major , minor;
+	minor = MINOR(devvt);
+	major = MAJOR(devvt);
+	pr_info("MAJOR : %d | MINOR : %d \n" , major , minor);
 
 	return 0;
 };
 
-static int initiliser(){
-	int res_inode ,  ret;
-//--------------------------------------------------------------------------------------------------//                  	//dev_t (major:minor) assignment phase
-	printk(KERN_INFO "ALLOCATING THE DEV_t VALUE FOR THE FILE \n");
-	res_inode = alloc_chrdev_region(&global_variable.devt,0,MAX_MINOR,"custom_driver");
-	if(res_inode < 0){
-		pr_err("ERROR IN MAKING THE MAJOR:MINOR FOR THE SPACE (error code : %d)\n",res_inode);
-		return res_inode ;
-	};
+static int purger(struct inode *inode ,  struct file *file){
+	pr_info("EXITNG THE PROCESS ..\n");
 
-	printk(KERN_INFO "OPERATION COMPLETE \n");
+	pr_info("custom close : the file has been closed by the kernel  \n");
+
+	return 0;
+};
+static int dispatcher(void){
+	pr_info("EXITNG THE PROCESS ..\n");
+
+	device_destroy(driver_class,devvt);
+	pr_info("device destroyed \n");
+	class_destroy(driver_class);
+	pr_info("class destroyed \n");
+	unregister_chrdev_region(devvt,MAX_MINOR);
+	pr_info("DRV_T UNREGISTERED \n");
+	return 0;
+};
+
+struct file_operations fops = {
+	.owner = THIS_MODULE , 
+	.open  = custom_opener,
+	.write = custom_writer,
+	.read  = custom_reader,
+	.release = purger,
+};
+
+static int initilizer(void){
+	pr_info("STARTING THE INILIZATION PHASE \n");
+
 //-------------------------------------------------------------------------------------------------//
- 
-//-------------------------------------------------------------------------------------------------//
-                        //cdev initilisation phase
-	printk(KERN_INFO "CREATING THE CDEV \n");
-	cdev_init(&global_variable.cdev_pointer,&file_ops);
-	global_variable.cdev_pointer.owner = THIS_MODULE ;
-	ret = cdev_add(global_variable.cdev_pointer,global_variable.devt,MAX_MINOR);
-	if(ret<0){
+        int res ;
+	res = alloc_chrdev_region(&devvt,0,MAX_MINOR,"single_char_driver");
+	if(res <0){
+		pr_err("DEVT ALLOCTIOIN ERROR  \n");
+		return 0;
+	};
+	pr_info("OPERATION COMPLETED \n");
+//--------------------------------------------------------------------------------------------------//
+
+	int major , minor ;
+	major =  MAJOR(devvt);
+	minor =  MINOR(devvt);
+
+//--------------------------------------------------------------------------------------------------//
+
+	cdev_variable = cdev_alloc();
+	cdev_variable->ops = &fops ; 
+	cdev_variable->owner = THIS_MODULE ;
+	if(cdev_add(cdev_variable,devvt,1)<0){
+		pr_err("CDEV ERROR \n");
 		goto fail_cdev;
 	};
-	printk("OPERATION COMPLETE\n");
-//-------------------------------------------------------------------------------------------------//
 
 //-------------------------------------------------------------------------------------------------//
-                         //class and device file creation 
-	printk(KERN_INFO "CREATING THE CLASS AND DEVICE FILES\n");
-	global_variable.driver_class = class_create("character_driver_custom");
-	if(IS_ERR(global_variable.driver_class)){
-		pr_err("ERROR IN CREATE THE DRIVER CLASS (error code : %d) \n",PTR_ERR(global_variable.driver_class));
+
+	driver_class = class_create("single_char_driver");
+	if(IS_ERR(driver_class)){
+		pr_err("CLASS CREATION ERROR (error code : %ld) \n ",PTR_ERR(driver_class));
 		goto fail_class;
 	};
-	for(int i =0 ; i<MAX_MINOR ; i++){
-		global_variable.module_devices[i] = device_create(&global_variable.driver_class,NULL,global_variable.devt,NULL,"custom_driver");
-		if(IS_ERR(global_variable.module_devices[i])){
-			pr_err("ERROR IN CREATING THE MINOR DEVICE FILE (error code :%d) \n");
-			goto fail_devices;
-		};
+
+	module_device = device_create(driver_class,NULL,devvt,NULL,"sin_char_driver");
+	if(IS_ERR(module_device)){
+		pr_err("MODULE DEVICE CREATION ERROR (error code : %ld", PTR_ERR(module_device));
+		goto fail_device ;
 	};
+	pr_info("OPERATION SUCCESSFUL : DEVICE FILE CREATED (major: %d | minor : %d) " ,major , minor);//-------------------------------------------------------------------------------------------------//
 
-	printk(KERN_INFO "OPERATION COMPLETE \n");
 
-//-------------------------------------------------------------------------------------------------//
+	return 0;
 
-//-------------------------------------------------------------------------------------------------//
-                                      //FAIL SAFE
+
+fail_device :
+	pr_info("DESTROYING THE DEVICE  \n");
+	device_destroy(driver_class,devvt);
+	pr_info("DEVICE DESTROY \n");
+
 fail_class :
-	class_destroy(global_variable.driver_class);
-	printk(KERN_INFO "class destroyed \n");
+	pr_info("DESTROYING THE CLASS \n");
+	class_destroy(driver_class);
+	pr_info("THE CLASS HAS BEEN DESTROYED \n");
 
-fail_devices :
-	for(int i=0 ; i<MAX_MINOR ; i++){
-		device_destroy(global_variable.driver_class , global_variable.devt);
-		printk(KERN_INFO "DEVICE %d has been destroyed \n",i);
-	};
-	class_destroy(global_variable.driver_class);
-	pr_info("CLASS DESTROYED \n");
 
 fail_cdev :
-	unregister_chrdev_region(global_variable.devt , MAX_MINOR);
-	pr_info("DEVT UNREGISTERED \n");
-	return ret;
-//-------------------------------------------------------------------------------------------------//
-	return 0;
+	pr_info("UNREGISTERING THE DEV_T ASSIGNED \n");
+	unregister_chrdev_region(devvt , MAX_MINOR);
+	pr_info("DEV_T UNREGISTERED \n");
+
+	return -1;
 };
 
+static int __init my_init(void){
+	pr_info("NOW IN THE INIT FUNCTION \n");
+	int res ;
 
-
-struct file_operations f_ops = {
-	.owner = THIS_MODULE,
-	.write = custom_writer,
-	.read  = custom_reader, 
-	.open  = custom_opener,
-	.release = custom_releaser,
-};
-
-
-
-static int __init my_driver_init(){
-	int result;
-
-	result = initiliser();
-	if(result<0){
-		printk(KERN_INFO "INILIZATION FAILED ERROR IN FUNCTION CALL\n");
+	res =  initilizer();
+	if(res<0){
+		pr_err("INITILASATION ERROR \n");
 		return -1;
 	};
 
+	pr_info("OPERATIN COMPLETED\n");
 	return 0;
-
 };
 
-static void __exit my_driver_exit(){
-
-	pr_info("EXITING FROM THE DRIVER \n");
-
-	for(int i=0 ; i<MAX_MINOR ; i++){
-		device_destroy(global_variable.driver_class,global_variable.devt);
-		pr_info("device %d destroyed \n",i);
+static void __exit my_exit(void){
+	pr_info("NOW EXITING FROM THE DRIVER \n");
+	if(dispatcher()<0){
+		pr_err("OPERATION FAILED \n");
 	};
 
-	class_destroy(global_variable.driver_class);
-	pr_info("CLASS DESTROYED \n");
-
-	unregister_chrdev_region(global_variable.devt , MAX_MINOR);
-	pr_info("MAJOR:MINOR DELETED AND DESTROYED FROM SYS/DEVICES \n");
+	pr_info("OPERTION COMPLETE \n");
 };
 
-module_init(my_driver_init);
-module_exit(my_driver_exit);
+
+module_init(my_init);
+module_exit(my_exit);
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("BLACKSTAR");
-MODULE_DESCRIPTION("A SIMPLE CHARACTER DRIVER , FIRST CUSTOM DRIVER CREATED BY BLACKSTAR");
+MODULE_DESCRIPTION("a simple character driver");
 
